@@ -1,0 +1,24 @@
+# ITCS 3160-0002, Spring 2024
+# Marco Vieira, marco.vieira@charlotte.edu
+# University of North Carolina at Charlotte
+version: '3'
+
+services:
+  db:
+    build: ./postgresql
+    container_name: db
+    expose:
+      - "5432"
+    ports:
+      - "5432:5432"
+  web:
+    build: ./python
+    container_name: api
+    volumes:
+      - "./python/app:/app"
+    expose:
+      - "5000"
+    ports:
+      - "8080:5000"
+    depends_on:
+      - db
