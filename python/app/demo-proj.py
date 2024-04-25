@@ -7,12 +7,16 @@
 
 import flask
 import logging, psycopg2, time
+import random
+import datetime
+from functools import wraps
 
 app = flask.Flask(__name__)
 
 StatusCodes = {
     'success': 200,
     'api_error': 400,
+    'unauthorized': 401, 
     'internal_error': 500
 }
 
@@ -33,8 +37,45 @@ def db_connection():
 
 
 
+##########################################################
+## TOKEN VERIFICATION
+##########################################################
 
+# Simpole token (shown in class)
 
+def token_required(f):
+    @wraps(f)
+    def decorator(*args, **kwargs):
+        token = None
+
+        if 'access-token' in flask.request.headers:
+            token = flask.request.headers['access-token']
+
+        if not token:
+            return flask.jsonify({'message': 'invalid token'})
+
+        try:
+            conn = db_connection()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM tokens WHERE timeout<current_timestamp")
+            conn.commit()
+
+            cur.execute("SELECT user_id FROM tokens WHERE token= ?", (token))
+
+            if cur.rowcount==0:
+                return flask.jsonify({'message': 
+                   'invalid token'})
+            else:
+                current_user = cur.fetchone()[0]
+        except (Exception) as error:
+            logger.error(f'POST /users - error: {error}')
+            conn.rollback()
+
+            return flask.jsonify({'message': 'invalid token'})
+
+        return f(current_user, *args, **kwargs)
+
+    return decorator
 
 ##########################################################
 ## ENDPOINTS
@@ -67,10 +108,12 @@ def landing_page():
 def get_all_users():
     logger.info('GET /users')
 
-    conn = db_connection()
-    cur = conn.cursor()
+    
 
     try:
+        conn = db_connection()
+        cur = conn.cursor()
+
         cur.execute('SELECT username, email FROM users')
         rows = cur.fetchall()
 
@@ -110,10 +153,12 @@ def get_user(username):
 
     logger.debug('username: {username}')
 
-    conn = db_connection()
-    cur = conn.cursor()
+    
 
     try:
+        conn = db_connection()
+        cur = conn.cursor()
+
         cur.execute('SELECT username, name, city FROM users where username = %s', (username,))
         rows = cur.fetchall()
 
@@ -150,10 +195,12 @@ def get_user(username):
 def get_all_auctions():
     logger.info('GET /auctions')
 
-    conn = db_connection()
-    cur = conn.cursor()
+    
 
     try:
+        conn = db_connection()
+        cur = conn.cursor()
+
         cur.execute('SELECT * FROM auctions')
         rows = cur.fetchall()
 
@@ -192,29 +239,23 @@ def add_users():
     logger.info('POST /users')
     payload = flask.request.get_json()
 
-    conn = db_connection()
-    cur = conn.cursor()
+    
 
     logger.debug(f'POST /users - payload: {payload}')
 
     # do not forget to validate every argument, e.g.,:
-    if 'username' not in payload:
-        response = {'status': StatusCodes['api_error'], 'results': 'username value not in payload'}
-        return flask.jsonify(response)
-
-    if 'email' not in payload:
-        response = {'status': StatusCodes['api_error'], 'results': 'email value not in payload'}
-        return flask.jsonify(response)
-    
-    if 'password' not in payload:
-        response = {'status': StatusCodes['api_error'], 'results': 'password value not in payload'}
+    if 'username' not in payload or 'email' not in payload or 'password' not in payload:
+        response = {'status': StatusCodes['api_error'], 'results': 'values missing from payload'}
         return flask.jsonify(response)
     
     # parameterized queries, good for security and performance
-    statement = 'INSERT INTO users (username, email, password) VALUES (%s, %s, %s)'
+    statement = 'INSERT INTO users (username, email, password) VALUES (?,?,?)'
     values = (payload['username'], payload['email'], payload['password'])
 
     try:
+        conn = db_connection()
+        cur = conn.cursor()
+
         cur.execute(statement, values)
 
         # commit the transaction
@@ -235,6 +276,68 @@ def add_users():
     return flask.jsonify(response)
 
 
+##
+## User login
+##
+## To use it, you need to use postman or curl:
+##
+## curl -X POST http://localhost:8080/users/ -H 'Content-Type: application/json' -d '{"city": "London", "username": "ppopov", "name": "Peter Popov"}'
+##
+
+@app.route('/login/', methods=['POST'])
+def user_login():
+    logger.info('POST /login')
+    payload = flask.request.get_json()
+
+    logger.debug(f'POST /login - payload: {payload}')
+
+    # Validate every argument
+    if not payload \
+        or 'username' not in payload \
+        or 'password' not in payload :
+        response = {'status': StatusCodes['unauthorized'], 'results': 'missing credentials from payload'}
+        return flask.jsonify(response)
+    
+    # parameterized queries
+    query = 'SELECT user_id FROM users WHERE username = ? AND password = ?)'
+    values = (payload['username'], payload['password'])
+    
+
+    try:
+        # connecting to the database
+        conn = db_connection()
+        cur = conn.cursor()
+
+        # excuting the query
+        cur.execute(query, values)
+        
+        user_id = cur.fetchone()[0]
+
+        if cur.rowcount == 0:
+            response = ('could not verify', 401)
+        else: 
+            response = payload['username'] + \
+                str(random.randrange(111111111, 999999999))
+            
+            query  = "INSERT INTO tokens (users_user_id, token, exp_datetime) \
+                VALUES( ?, ? , current_timestamp + (24 * interval '1 hour'))"
+            values = (user_id, response)
+
+            cur.execute(query, values)
+
+        conn.commit()
+    except (Exception, psycopg2.DatabaseError) as error:
+        logger.error(f'POST /login - error: {error}')
+        response = {'status': StatusCodes['internal_error'], 'errors': str(error)}
+
+        # an error occurred, rollback
+        conn.rollback()
+
+    finally:
+        if conn is not None:
+            conn.close()
+    
+    return response
 ##
 ## Demo PUT
 ##
