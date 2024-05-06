@@ -11,13 +11,15 @@ import random
 import datetime
 from functools import wraps
 from flask import request
+from datetime import datetime
 
 app = flask.Flask(__name__)
 
 StatusCodes = {
     'success': 200,
     'api_error': 400,
-    'unauthorized': 401, 
+    'unauthorized': 401,
+    'not_found': 404,
     'internal_error': 500
 }
 
@@ -363,7 +365,7 @@ def user_login():
 ##
 ## To use it, you need to use postman or curl:
 ##
-## curl -X POST http://localhost:8080/auctions/ -H 'Content-Type: application/json' -H "access-token: corban543983361" -d '{"item_id": "1", "min_price" : "10.99", "end_date_time" : "2024-05-10 18:00:00","title" : "auction title", "item_desc" : "Blah blah"}'
+## curl -X POST http://localhost:8080/auctions/ -H 'Content-Type: application/json' -H "access-token: abc229373448" -d '{"item_id": "1", "min_price" : "10.99", "end_date_time" : "2024-05-10 18:00:00","title" : "auction title", "item_desc" : "Blah blah"}'
 ##
 ## Status: Complete
 
@@ -421,7 +423,7 @@ def create_auction(current_user):
 ##
 ## To use it, access:
 ##
-## curl -X GET http://localhost:8080/auctions/  -H "Content-Type: application/json" -H "access-token: corban543983361"
+## curl -X GET http://localhost:8080/auctions/  -H "Content-Type: application/json" -H "access-token: aaa257676644"
 ##
 ## Status: Complete
 
@@ -434,7 +436,7 @@ def get_all_auctions(current_user):
         conn = db_connection()
         cur = conn.cursor()
 
-        cur.execute('SELECT auction_id, item_des, end_date_time FROM auctions')
+        cur.execute('SELECT auction_id, item_desc, end_date_time FROM auctions WHERE end_date_time > current_timestamp')
         rows = cur.fetchall()
 
         logger.debug('GET /users - parse')
@@ -602,6 +604,20 @@ def edit_properties(current_user, auction_id):
         conn = db_connection()
         cur = conn.cursor()
 
+        # Check if the auction exists
+        cur.execute("SELECT users_user_id, end_date_time FROM auctions WHERE auction_id = %s", (auction_id,))
+        auction = cur.fetchone()
+
+        if auction is None:
+            response = {'status': StatusCodes['not_found'], 'results': 'Auction not found'}
+            return flask.jsonify(response)
+
+        #Check if the user is the owner of the auction
+        if not (auction[0] == current_user):
+            response = {'status': StatusCodes['unauthorized'], 'results': 'Not owner of the auction'}
+            return flask.jsonify(response)
+        
+        # Update the item description
         res = cur.execute(statement, values)
         response = {'status': StatusCodes['success'], 'results': f'Updated: {cur.rowcount}'}
 
@@ -625,7 +641,7 @@ def edit_properties(current_user, auction_id):
 ############################################
 ## List All Auctions Where User Has Activity
 ##
-## curl -X GET http://localhost:8080/user/activity/  -H "Content-Type: application/json" -H "access-token: corban543983361"
+## curl -X GET http://localhost:8080/user/activity/  -H "Content-Type: application/json" -H "access-token: ddd796761222"
 ##
 ## Status: Complete
 ############################################
@@ -690,48 +706,59 @@ def list_user_auctions(current_user):
 ###########################################
 ## Place a bid in an auction
 ##
-## curl -X GET http://localhost:8080/user/activity/  -H "Content-Type: application/json" -H "access-token: corban543983361"
+## curl -X POST http://localhost:8080/bid/  -H "Content-Type: application/json" -H "access-token: corban543983361" -d '{"auction_id" : "3", "bid_amount" : "8.00"}'
 ##
-## Status: Incomplete
+## Status: Complete
 ###########################################
 
-@app.route('/dbproj/bid/<int:auction_id>/<float:bid_amount>', methods=['GET'])
+@app.route('/bid/', methods=['POST'])
 @token_required
-def place_bid(current_user, auction_id, bid_amount):
-    logger.info(f'GET /dbproj/bid/{auction_id}/{bid_amount}')
+def place_bid(current_user):
+    logger.info(f'PUT /bid')
+
+    payload = flask.request.get_json()
+
+    logger.debug(f'PUT /bid - payload: {payload}')
+
+    # do not forget to validate every argument, e.g.,:
+    if not payload or 'auction_id' not in payload or 'bid_amount' not in payload:
+        response = {'status': StatusCodes['api_error'], 'results': 'missing information'}
+        return flask.jsonify(response)
 
     try:
         conn = db_connection()
         cur = conn.cursor()
+
         # Check if the auction exists
-        cur.execute("SELECT * FROM auctions WHERE auction_id = %s", (auction_id,))
+        cur.execute("SELECT end_date_time, min_price FROM auctions WHERE auction_id = %s", (payload['auction_id'],))
         auction = cur.fetchone()
+
         if auction is None:
             response = {'status': StatusCodes['not_found'], 'results': 'Auction not found'}
             return flask.jsonify(response)
 
         # Check if the auction has ended
-        if auction[2]:  
-            response = {'status': StatusCodes['bad_request'], 'results': 'Auction has already ended'}
+        if auction[0] < datetime.now():  
+            response = {'status': StatusCodes['api_error'], 'results': 'Auction has already ended'}
             return flask.jsonify(response)
 
         # Check if the bid is higher than the current highest bid (if any)
-        cur.execute("SELECT MAX(amount) FROM bids WHERE auction_id = %s", (auction_id))
+        cur.execute("SELECT MAX(amount) FROM bids WHERE auctions_auction_id = %s", (payload['auction_id'],))
         max_bid = cur.fetchone()[0]
-        if max_bid is not None and bid_amount <= max_bid:
-            response = {'status': StatusCodes['bad_request'], 'results': 'Bid must be higher than the current highest bid'}
+        if max_bid is not None and float(payload['bid_amount']) <= max_bid:
+            response = {'status': StatusCodes['api_error'], 'results': 'Bid must be higher than the current highest bid', 'max_bid' : max_bid}
             return flask.jsonify(response)
 
         # Check if the bid is higher than the minimum price
-        if bid_amount < auction[3]:  # Assuming the 5th column indicates the minimum bid price
-            response = {'status': StatusCodes['bad_request'], 'results': 'Bid must be higher than the minimum price'}
+        if float(payload['bid_amount']) < auction[1]:
+            response = {'status': StatusCodes['api_error'], 'results': 'Bid must be higher than the minimum price'}
             return flask.jsonify(response)
 
         # Insert the bid into the database
-        cur.execute("INSERT INTO bids (auction_id, users_user_id, amount) VALUES (%s, %s, %s)", (auction_id, users.user_id, bids.amount))
+        cur.execute("INSERT INTO bids (auctions_auction_id, users_user_id, amount) VALUES (%s, %s, %s)", (payload['auction_id'], current_user, payload['bid_amount']))
         conn.commit()
 
-        response = {'status': StatusCodes['success'], 'results': 'Bid placed successfully'}
+        response = {'status': StatusCodes['success'], 'results': 'Bid placed successfully', 'amount' : payload['bid_amount']}
 
     except (Exception, psycopg2.DatabaseError) as error:
         logger.error(f'GET /dbproj/bid/<int:auction_id>/<float:bid_amount> - error: {error}')
@@ -748,7 +775,11 @@ def place_bid(current_user, auction_id, bid_amount):
 
 
 ##########################################################
-#Auction Board (Comments)
+## Auction Board (Comments)
+##
+## curl -X POST http://localhost:8080/comments/  -H "Content-Type: application/json" -H "access-token: aaa257676644" -d '{"comment_content" : "one plus one is three", "auction_id" : "1" }'
+##
+## Status: Complete
 ##########################################################
 
 @app.route('/comments/', methods=['POST'])
@@ -757,15 +788,16 @@ def auction_board(current_user):
     logger.info('POST /comments')
     payload = flask.request.get_json()
 
-    logger.debug(f'POST /users - payload: {payload}')
+    logger.debug(f'POST /comments - payload: {payload}')
 
     # do not forget to validate every argument, e.g.,:
-    if 'comm_content' not in payload:
-        response = {'status': StatusCodes['api_error'], 'results': 'username value not in payload'}
+    if not payload or 'comment_content' not in payload or 'auction_id' not in payload:
+        response = {'status': StatusCodes['api_error'], 'results': 'value not in payload'}
         return flask.jsonify(response)
+    
     # parameterized queries, good for security and performance
-    statement = 'INSERT INTO comments (comm_content) VALUES (%s)'
-    values = (payload['comm_content'])
+    statement = 'INSERT INTO comments (comm_content, auctions_auction_id, users_user_id) VALUES (%s, %s, %s)'
+    values = (payload['comment_content'], payload['auction_id'], current_user)
 
     try:
         conn = db_connection()
@@ -775,7 +807,7 @@ def auction_board(current_user):
 
         # commit the transaction
         conn.commit()
-        response = {'status': StatusCodes['success'], 'results': f'Inserted comments {payload["comm_content"]}'}
+        response = {'status': StatusCodes['success'], 'results': f'Inserted comments: {payload["comment_content"]}'}
 
     except (Exception, psycopg2.DatabaseError) as error:
         logger.error(f'POST /users - error: {error}')
@@ -794,53 +826,62 @@ def auction_board(current_user):
 
 
 ##########################################################
-#Cacnel an Auction
+## Close an Auction
+##
+## curl -X GET http://localhost:8080/auctions/<int:auction_id>/close/  -H "Content-Type: application/json" -H "access-token: corban543983361"
+##
+## Status: Complete
 #########################################################
 
-@app.route('/auctions/<int:auction_id>/close', methods=['POST'])
+@app.route('/auctions/<int:auction_id>/close/', methods=['GET'])
 @token_required
 def close_auction(current_user, auction_id):
-    logger.info(f'POST /auctions/{auction_id}/close')
-
     
+    logger.info(f'GET /auctions/{auction_id}/close')
 
     try:
         conn = db_connection()
         cur = conn.cursor()
 
         # Check if the auction exists
-        cur.execute("SELECT * FROM auctions WHERE auction_id = %s", (auction_id,))
+        cur.execute("SELECT users_user_id, end_date_time FROM auctions WHERE auction_id = %s", (auction_id,))
         auction = cur.fetchone()
+
         if auction is None:
             response = {'status': StatusCodes['not_found'], 'results': 'Auction not found'}
             return flask.jsonify(response)
+        
+        #Check if the user is the owner of the auction
+        if not (auction[0] == current_user):
+            response = {'status': StatusCodes['unauthorized'], 'results': 'Not owner of the auction'}
+            return flask.jsonify(response)
 
         # Check if the auction has already ended
-        if auction[2]: 
+        end_date = auction[1]
+
+        if end_date > datetime.now(): 
             response = {'status': StatusCodes['bad_request'], 'results': 'Auction has already ended'}
             return flask.jsonify(response)
 
         # Check if the current date and time is past the specified end date of the auction
-        end_date = auction[2]  
-        if datetime.datetime.now() < end_date:
+        if datetime.now() < end_date:
             response = {'status': StatusCodes['bad_request'], 'results': 'Auction has not yet ended'}
             return flask.jsonify(response)
 
         # Determine the winner (assuming the highest bidder)
-        cur.execute("SELECT bidder_username, MAX(bid_amount) FROM bids WHERE auction_id = %s", (auction_id,))
+        cur.execute("SELECT username, amount FROM bids, users WHERE user_id = users_user_id AND auctions_auction_id = %s ORDER BY bids DESC", (auction_id,))
         winner_data = cur.fetchone()
+        
         if winner_data is None:
             response = {'status': StatusCodes['bad_request'], 'results': 'No bids found for this auction'}
             return flask.jsonify(response)
-        
-        winner_username, winning_bid_amount = winner_data
 
-        # Update auction details with winner and winning bid amount
-        cur.execute("UPDATE auctions SET winner_username = %s, winning_bid = %s, ended = TRUE WHERE auction_id = %s",
-                    (winner_username, winning_bid_amount, auction_id))
-        conn.commit()
+        results = {
+            'Winner Username' : winner_data[0],
+            'Winning Bid'     : winner_data[1]
+        }
 
-        response = {'status': StatusCodes['success'], 'results': 'Auction closed successfully'}
+        response = {'status': StatusCodes['success'], 'results': results}
 
     except (Exception, psycopg2.DatabaseError) as error:
         logger.error(error)
@@ -857,7 +898,83 @@ def close_auction(current_user, auction_id):
 
 
 ##########################################################
-# Cancel Auction
+## Close an Auction
+##
+## curl -X POST http://localhost:8080/auctions/<int:auction_id>/close/  -H "Content-Type: application/json" -H "access-token: corban543983361"
+##
+## Status: Incomplete
+#########################################################
+
+# @app.route('/auctions/<int:auction_id>/close', methods=['POST'])
+# @token_required
+# def close_auction(current_user, auction_id):
+#     return # Repetitive (Auction already closes when the end date/time is reached)
+#     logger.info(f'POST /auctions/{auction_id}/close')
+
+#     try:
+#         conn = db_connection()
+#         cur = conn.cursor()
+
+#         # Check if the auction exists
+#         cur.execute("SELECT users_user_id, end_date_time FROM auctions WHERE auction_id = %s", (auction_id,))
+#         auction = cur.fetchone()
+
+#         if auction is None:
+#             response = {'status': StatusCodes['not_found'], 'results': 'Auction not found'}
+#             return flask.jsonify(response)
+        
+#         #Check if the user is the owner of the auction
+#         if not (auction[0] == current_user):
+#             response = {'status': StatusCodes['unauthorized'], 'results': 'Not owner of the auction'}
+#             return flask.jsonify(response)
+
+#         # Check if the auction has already ended
+#         end_date = auction[1]
+
+#         if end_date > datetime.now(): 
+#             response = {'status': StatusCodes['bad_request'], 'results': 'Auction has already ended'}
+#             return flask.jsonify(response)
+
+#         # Check if the current date and time is past the specified end date of the auction
+#         if datetime.now() < end_date:
+#             response = {'status': StatusCodes['bad_request'], 'results': 'Auction has not yet ended'}
+#             return flask.jsonify(response)
+
+#         # Determine the winner (assuming the highest bidder)
+#         cur.execute("SELECT users_user_id, MAX(bid_amount) FROM bids WHERE auction_id = %s", (auction_id,))
+#         winner_data = cur.fetchone()
+        
+#         if winner_data is None:
+#             response = {'status': StatusCodes['bad_request'], 'results': 'No bids found for this auction'}
+#             return flask.jsonify(response)
+
+#         # Update auction details with winner and winning bid amount
+#         cur.execute("UPDATE auctions SET winner_id = %s, winning_bid = %s WHERE auction_id = %s",
+#                     (winner_data[0], winner_data[1], auction_id))
+#         conn.commit()
+
+#         response = {'status': StatusCodes['success'], 'results': 'Auction closed successfully'}
+
+#     except (Exception, psycopg2.DatabaseError) as error:
+#         logger.error(error)
+#         response = {'status': StatusCodes['internal_error'], 'errors': str(error)}
+#         conn.rollback()
+
+#     finally:
+#         if conn is not None:
+#             conn.close()
+
+#     return flask.jsonify(response)
+
+
+
+
+##########################################################
+## Cancel Auction
+##
+## curl -X POST http://localhost:8080/auctions/<int:auction_id>/cancel  -H "Content-Type: application/json" -H "access-token: corban543983361"
+##
+## Status: Complete
 ##########################################################
 
 @app.route('/auctions/<int:auction_id>/cancel', methods=['POST'])
@@ -865,26 +982,30 @@ def close_auction(current_user, auction_id):
 def cancel_auction(current_user, auction_id):
     logger.info(f'POST /auctions/{auction_id}/cancel')
 
-    
-
     try:
         conn = db_connection()
         cur = conn.cursor()
 
         # Check if the auction exists
-        cur.execute("SELECT * FROM auctions WHERE auction_id = %s", (auction_id,))
+        cur.execute("SELECT users_user_id, end_date_time FROM auctions WHERE auction_id = %s", (auction_id,))
         auction = cur.fetchone()
+
         if auction is None:
             response = {'status': StatusCodes['not_found'], 'results': 'Auction not found'}
             return flask.jsonify(response)
 
+        #Check if the user is the owner of the auction
+        if not (auction[0] == current_user):
+            response = {'status': StatusCodes['unauthorized'], 'results': 'Not owner of the auction'}
+            return flask.jsonify(response)
+
         # Check if the auction has already ended
-        if auction[2]:  
-            response = {'status': StatusCodes['bad_request'], 'results': 'Auction has already ended'}
+        if auction[1] < datetime.now():  
+            response = {'status': StatusCodes['api_err'], 'results': 'Auction has already ended'}
             return flask.jsonify(response)
 
         # Cancel the auction
-        cur.execute("UPDATE auctions SET ended = TRUE WHERE auction_id = %s", (auction_id,))
+        cur.execute("UPDATE auctions SET end_date_time = current_timestamp WHERE auction_id = %s", (auction_id,))
         conn.commit()
 
         response = {'status': StatusCodes['success'], 'results': 'Auction canceled successfully'}

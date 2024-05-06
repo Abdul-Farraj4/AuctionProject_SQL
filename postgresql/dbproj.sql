@@ -1,7 +1,7 @@
 CREATE TABLE users (
 	user_id	 SERIAL,
-	username VARCHAR(512) NOT NULL,
-	email	 VARCHAR(512) NOT NULL,
+	username VARCHAR(512) NOT NULL UNIQUE,
+	email	 VARCHAR(512) NOT NULL UNIQUE,
 	password VARCHAR(512) NOT NULL,
 	PRIMARY KEY(user_id)
 );
@@ -48,7 +48,6 @@ CREATE TABLE tokens (
 	PRIMARY KEY(token_id)
 );
 
-ALTER TABLE users ADD UNIQUE (username, email);
 ALTER TABLE auctions ADD CONSTRAINT auctions_fk1 FOREIGN KEY (users_user_id) REFERENCES users(user_id);
 ALTER TABLE bids ADD CONSTRAINT bids_fk1 FOREIGN KEY (users_user_id) REFERENCES users(user_id);
 ALTER TABLE bids ADD CONSTRAINT bids_fk2 FOREIGN KEY (auctions_auction_id) REFERENCES auctions(auction_id);
