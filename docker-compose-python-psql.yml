@@ -15,7 +15,7 @@ services:
     build: ./python
     container_name: api
     volumes:
-      - "./python/app:/app"
+      - "/Users/ahmadelhatto/Documents/College/Year 3 Sem 2/ITCS 3160/AuctionProject_SQL/python/app:/app"
     expose:
       - "5000"
     ports:

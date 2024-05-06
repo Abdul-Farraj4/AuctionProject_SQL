@@ -8,9 +8,11 @@ CREATE TABLE users (
 
 CREATE TABLE auctions (
 	auction_id	 SERIAL,
-	item_name	 VARCHAR(512) NOT NULL,
+	item_id	 INTEGER NOT NULL,
 	end_date_time TIMESTAMP NOT NULL,
 	min_price	 FLOAT(8) NOT NULL,
+	title	 VARCHAR(512) NOT NULL,
+	item_desc	 VARCHAR(512) NOT NULL,
 	users_user_id INTEGER NOT NULL,
 	PRIMARY KEY(auction_id)
 );
